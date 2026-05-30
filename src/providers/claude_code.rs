@@ -435,7 +435,14 @@ impl Provider for ClaudeCode {
             prev_uuid = Some(entry_uuid);
         }
 
-        let content_bytes = lines.join("\n").into_bytes();
+        // Terminate the final line with a newline. Claude Code appends new turns
+        // to this file on resume; without a trailing newline its first appended
+        // record is concatenated onto casr's last line, corrupting it.
+        let mut content = lines.join("\n");
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        let content_bytes = content.into_bytes();
 
         // Use atomic write.
         let outcome =
@@ -531,24 +538,45 @@ fn claude_entry_type(role: &MessageRole) -> &'static str {
     }
 }
 
+/// Coerce `tool_use.input` to a JSON object.
+///
+/// The Anthropic API requires `tool_use.input` to be a JSON object. Source
+/// agents (notably Codex) can store tool arguments as a JSON-encoded string.
+/// These historical tool calls are never re-executed — they are replayed as
+/// context only — so coercing to `{"value": <original>}` is safe for any
+/// string that isn't itself a JSON object.
+fn coerce_tool_input(arguments: &serde_json::Value) -> serde_json::Value {
+    match arguments {
+        serde_json::Value::Object(_) => arguments.clone(),
+        serde_json::Value::String(s) => match serde_json::from_str::<serde_json::Value>(s) {
+            Ok(v @ serde_json::Value::Object(_)) => v,
+            _ => serde_json::json!({ "value": s }),
+        },
+        serde_json::Value::Null => serde_json::json!({}),
+        other => serde_json::json!({ "value": other }),
+    }
+}
+
 fn build_message_content(msg: &CanonicalMessage) -> serde_json::Value {
     match msg.role {
         MessageRole::Assistant => {
             let mut blocks: Vec<serde_json::Value> = Vec::new();
             if !msg.content.is_empty() {
-                blocks.push(serde_json::json!({
-                    "type": "text",
-                    "text": msg.content,
-                }));
+                blocks.push(serde_json::json!({ "type": "text", "text": msg.content }));
             }
             for tc in &msg.tool_calls {
                 blocks.push(serde_json::json!({
                     "type": "tool_use",
                     "id": tc.id.as_deref().unwrap_or(""),
                     "name": tc.name,
-                    "input": tc.arguments,
+                    "input": coerce_tool_input(&tc.arguments),
                 }));
             }
+            // Some source agents (e.g. Gemini) attach tool results directly to
+            // the assistant message. Preserve them so multi-hop conversions stay
+            // lossless. For the common Codex→Claude path, tool output is
+            // reclassified as Tool role in the Codex reader, so codex assistant
+            // messages never reach here with results.
             for tr in &msg.tool_results {
                 blocks.push(serde_json::json!({
                     "type": "tool_result",
@@ -589,10 +617,30 @@ fn build_inner_message(
     });
     if let Some(ref author) = msg.author {
         inner_msg["model"] = serde_json::Value::String(author.clone());
-    } else if msg.role == MessageRole::Assistant
+    } else if entry_type == "assistant"
         && let Some(model) = session_model_name
     {
         inner_msg["model"] = serde_json::Value::String(model.to_string());
+    }
+    // Claude Code's resume loader expects assistant messages to carry the full
+    // Anthropic message envelope (id / type / model / stop_reason / usage),
+    // the same shape its own API responses are persisted in. Without these
+    // fields, `claude --resume` hangs on load and reports "Failed to resume
+    // session". The source agent doesn't provide real values, so synthesize
+    // benign defaults; provenance is preserved in `model` when available.
+    if entry_type == "assistant" {
+        inner_msg["id"] =
+            serde_json::Value::String(format!("msg_casr_{}", uuid::Uuid::new_v4().simple()));
+        inner_msg["type"] = serde_json::Value::String("message".to_string());
+        if inner_msg.get("model").is_none() {
+            inner_msg["model"] = serde_json::Value::String("unknown".to_string());
+        }
+        inner_msg["stop_reason"] = serde_json::Value::String("end_turn".to_string());
+        inner_msg["stop_sequence"] = serde_json::Value::Null;
+        inner_msg["usage"] = serde_json::json!({
+            "input_tokens": 0,
+            "output_tokens": 0,
+        });
     }
     inner_msg
 }

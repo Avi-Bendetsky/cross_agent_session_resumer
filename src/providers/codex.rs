@@ -245,7 +245,8 @@ impl Provider for Codex {
     ) -> anyhow::Result<WrittenSession> {
         let target_session_id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now();
-        let now_iso = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        // Codex uses Unix float timestamps (seconds), not ISO strings.
+        let now_unix: f64 = now.timestamp_millis() as f64 / 1000.0;
 
         let sessions_dir = Self::sessions_dir()
             .ok_or_else(|| anyhow::anyhow!("cannot determine Codex sessions directory"))?;
@@ -267,9 +268,12 @@ impl Provider for Codex {
             .to_string_lossy()
             .to_string();
 
+        // Use the now ISO for metadata inside the payload (human-readable),
+        // but the top-level "timestamp" field is numeric as Codex expects.
+        let now_iso = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         lines.push(serde_json::to_string(&serde_json::json!({
             "type": "session_meta",
-            "timestamp": now_iso,
+            "timestamp": now_unix,
             "payload": {
                 "id": target_session_id,
                 "cwd": cwd,
@@ -281,15 +285,14 @@ impl Provider for Codex {
             }
         }))?);
 
-        // 2. Messages.
+        // 2. Messages. Codex event timestamps are Unix float seconds.
         for msg in &session.messages {
-            let msg_ts = msg
+            let msg_unix: f64 = msg
                 .timestamp
-                .and_then(chrono::DateTime::from_timestamp_millis)
-                .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
-                .unwrap_or_else(|| now_iso.clone());
+                .map(|ms| ms as f64 / 1000.0)
+                .unwrap_or(now_unix);
 
-            for event in codex_events_for_message(msg, &msg_ts) {
+            for event in codex_events_for_message(msg, msg_unix) {
                 lines.push(serde_json::to_string(&event)?);
             }
         }
@@ -319,7 +322,11 @@ impl Provider for Codex {
     }
 }
 
-fn codex_events_for_message(msg: &CanonicalMessage, msg_ts: &str) -> Vec<serde_json::Value> {
+/// Build the Codex JSONL event(s) for one canonical message.
+///
+/// `msg_unix` is the event timestamp as Unix seconds (float), matching
+/// the numeric timestamp format Codex uses in its rollout files.
+fn codex_events_for_message(msg: &CanonicalMessage, msg_unix: f64) -> Vec<serde_json::Value> {
     // User messages that carry tool payloads must be serialized as response_item
     // envelopes; event_msg/user_message cannot represent tool_use/tool_result blocks.
     let user_needs_response_item = msg.role == MessageRole::User
@@ -328,7 +335,7 @@ fn codex_events_for_message(msg: &CanonicalMessage, msg_ts: &str) -> Vec<serde_j
     match msg.role {
         MessageRole::User if !user_needs_response_item => vec![serde_json::json!({
             "type": "event_msg",
-            "timestamp": msg_ts,
+            "timestamp": msg_unix,
             "payload": {
                 "type": "user_message",
                 "message": msg.content,
@@ -336,7 +343,7 @@ fn codex_events_for_message(msg: &CanonicalMessage, msg_ts: &str) -> Vec<serde_j
         })],
         MessageRole::User => vec![serde_json::json!({
             "type": "response_item",
-            "timestamp": msg_ts,
+            "timestamp": msg_unix,
             "payload": {
                 "type": "message",
                 "role": codex_role_string(&msg.role),
@@ -346,7 +353,7 @@ fn codex_events_for_message(msg: &CanonicalMessage, msg_ts: &str) -> Vec<serde_j
         MessageRole::Assistant if msg.author.as_deref() == Some("reasoning") => {
             vec![serde_json::json!({
                 "type": "event_msg",
-                "timestamp": msg_ts,
+                "timestamp": msg_unix,
                 "payload": {
                     "type": "agent_reasoning",
                     "text": msg.content,
@@ -359,7 +366,7 @@ fn codex_events_for_message(msg: &CanonicalMessage, msg_ts: &str) -> Vec<serde_j
         | MessageRole::Other(_) => {
             let mut events = vec![serde_json::json!({
                 "type": "response_item",
-                "timestamp": msg_ts,
+                "timestamp": msg_unix,
                 "payload": {
                     "type": "message",
                     "role": codex_role_string(&msg.role),
@@ -370,7 +377,7 @@ fn codex_events_for_message(msg: &CanonicalMessage, msg_ts: &str) -> Vec<serde_j
             if let Some(info) = codex_token_count_info(&msg.extra) {
                 events.push(serde_json::json!({
                     "type": "event_msg",
-                    "timestamp": msg_ts,
+                    "timestamp": msg_unix,
                     "payload": {
                         "type": "token_count",
                         "info": info,
@@ -567,11 +574,25 @@ impl Codex {
                 }
                 "response_item" => {
                     if let Some(p) = payload {
-                        let role_str = p
-                            .get("role")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("assistant");
-                        let role = normalize_role(role_str);
+                        // `function_call_output` / `custom_tool_call_output` events
+                        // carry no `role` field and would otherwise default to
+                        // "assistant". The Anthropic API (and Claude Code resume)
+                        // require tool results to live in *user* turns, so we
+                        // classify them as Tool — target writers map Tool → user side.
+                        let payload_type =
+                            p.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+                        let role = if matches!(
+                            payload_type,
+                            "function_call_output" | "custom_tool_call_output"
+                        ) {
+                            MessageRole::Tool
+                        } else {
+                            let role_str = p
+                                .get("role")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("assistant");
+                            normalize_role(role_str)
+                        };
 
                         let content_val = p.get("content");
                         let text = codex_extract_text_content(content_val);
@@ -681,6 +702,83 @@ impl Codex {
                                 );
                             }
                         }
+                    }
+                }
+                "compacted" => {
+                    // A compaction event replaces all accumulated history with a
+                    // condensed `replacement_history` snapshot — the source
+                    // agent's live context at that point. Resetting here means
+                    // the converted session mirrors the *live* context rather than
+                    // replaying the full on-disk archive (a session can compact
+                    // dozens of times; only the final snapshot plus post-compaction
+                    // events are actually in context).
+                    if let Some(p) = payload {
+                        let mut replacement: Vec<CanonicalMessage> = Vec::new();
+                        if let Some(items) = p.get("replacement_history").and_then(|v| v.as_array())
+                        {
+                            for item in items {
+                                let item_type = item
+                                    .get("type")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default();
+                                let role = if matches!(
+                                    item_type,
+                                    "function_call_output" | "custom_tool_call_output"
+                                ) {
+                                    MessageRole::Tool
+                                } else {
+                                    let role_str = item
+                                        .get("role")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("assistant");
+                                    normalize_role(role_str)
+                                };
+                                let content_val = item.get("content");
+                                let text = codex_extract_text_content(content_val);
+                                let mut tool_calls = codex_extract_tool_calls(content_val);
+                                tool_calls.extend(codex_extract_payload_tool_calls(item));
+                                let mut tool_results = codex_extract_tool_results(content_val);
+                                tool_results.extend(codex_extract_payload_tool_results(item));
+                                if text.trim().is_empty()
+                                    && tool_calls.is_empty()
+                                    && tool_results.is_empty()
+                                {
+                                    continue;
+                                }
+                                replacement.push(CanonicalMessage {
+                                    idx: 0,
+                                    role,
+                                    content: text,
+                                    timestamp: ts,
+                                    author: None,
+                                    tool_calls,
+                                    tool_results,
+                                    extra: serde_json::Value::Null,
+                                });
+                            }
+                        }
+                        // An optional free-text summary accompanying the compaction.
+                        if let Some(summary) = p.get("message").and_then(|v| v.as_str())
+                            && !summary.trim().is_empty()
+                        {
+                            replacement.push(CanonicalMessage {
+                                idx: 0,
+                                role: MessageRole::Assistant,
+                                content: summary.to_string(),
+                                timestamp: ts,
+                                author: Some("summary".to_string()),
+                                tool_calls: vec![],
+                                tool_results: vec![],
+                                extra: serde_json::Value::Null,
+                            });
+                        }
+                        debug!(
+                            line = line_num,
+                            replaced = messages.len(),
+                            kept = replacement.len(),
+                            "codex compaction: resetting history to replacement_history"
+                        );
+                        messages = replacement;
                     }
                 }
                 _ => {
@@ -1087,7 +1185,7 @@ mod tests {
             }),
         };
 
-        let events = codex_events_for_message(&msg, "2023-11-14T22:13:20.000Z");
+        let events = codex_events_for_message(&msg, 1700000000.0_f64);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0]["type"], "response_item");
         assert_eq!(events[0]["payload"]["type"], "message");
@@ -1125,7 +1223,7 @@ mod tests {
             extra: json!({}),
         };
 
-        let events = codex_events_for_message(&msg, "2023-11-14T22:13:20.000Z");
+        let events = codex_events_for_message(&msg, 1700000000.0_f64);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["type"], "response_item");
         assert_eq!(events[0]["payload"]["type"], "message");
@@ -1442,7 +1540,7 @@ not json
             tool_results: vec![],
             extra: json!({}),
         };
-        let events = codex_events_for_message(&msg, "2023-11-14T22:13:20.000Z");
+        let events = codex_events_for_message(&msg, 1700000000.0_f64);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["type"], "event_msg");
         assert_eq!(events[0]["payload"]["type"], "user_message");
@@ -1461,7 +1559,7 @@ not json
             tool_results: vec![],
             extra: json!({}),
         };
-        let events = codex_events_for_message(&msg, "2023-11-14T22:13:20.000Z");
+        let events = codex_events_for_message(&msg, 1700000000.0_f64);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["type"], "event_msg");
         assert_eq!(events[0]["payload"]["type"], "agent_reasoning");
@@ -1492,12 +1590,72 @@ not json
             tool_results: vec![],
             extra: json!(null),
         };
-        let events = codex_events_for_message(&msg, "2023-11-14T22:13:20.000Z");
+        let events = codex_events_for_message(&msg, 1700000000.0_f64);
         assert_eq!(
             events.len(),
             1,
             "Assistant without usage should produce one response_item"
         );
         assert_eq!(events[0]["type"], "response_item");
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression tests for cross-provider conversion bugs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reader_function_call_output_classified_as_tool_role() {
+        // `function_call_output` events have no `role` field. Before the fix they
+        // defaulted to "assistant", placing tool results in an assistant turn which
+        // the Anthropic API rejects. They must now produce a Tool-role message.
+        let content = concat!(
+            r#"{"type":"session_meta","payload":{"id":"sx","cwd":"/tmp/p"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"run something"}]}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"done"}}"#,
+        );
+        let session = read_codex_jsonl(content);
+        let tool_msg = session
+            .messages
+            .iter()
+            .find(|m| !m.tool_results.is_empty())
+            .expect("tool result message should exist");
+        assert_eq!(
+            tool_msg.role,
+            MessageRole::Tool,
+            "function_call_output must produce Tool role, not Assistant"
+        );
+    }
+
+    #[test]
+    fn reader_jsonl_compaction_resets_to_replacement_history() {
+        // A `compacted` event replaces all prior history with its
+        // replacement_history. Only that snapshot plus post-compaction events
+        // should survive — the source agent's live context, not the full archive.
+        let content = concat!(
+            r#"{"type":"session_meta","payload":{"id":"sx","cwd":"/tmp/p"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"PRE-COMPACTION ORIGINAL"}]}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"pre answer"}]}}"#,
+            "\n",
+            r#"{"type":"compacted","payload":{"replacement_history":[{"type":"message","role":"user","content":[{"type":"input_text","text":"KEPT SUMMARY TASK"}]}]}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"POST answer"}]}}"#,
+        );
+        let session = read_codex_jsonl(content);
+        let joined = session
+            .messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(
+            !joined.contains("PRE-COMPACTION"),
+            "pre-compaction history must be dropped; got: {joined}"
+        );
+        assert!(joined.contains("KEPT SUMMARY TASK"), "got: {joined}");
+        assert!(joined.contains("POST answer"), "got: {joined}");
     }
 }
