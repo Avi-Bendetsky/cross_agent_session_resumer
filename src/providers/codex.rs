@@ -1151,9 +1151,9 @@ mod tests {
         );
         let path_str = path.to_string_lossy();
         assert!(
-            path_str.ends_with(
+            path.ends_with(Path::new(
                 "2026/02/09/rollout-2026-02-09T06-07-08-019c40fd-3c51-7621-a418-68203585f589.jsonl"
-            ),
+            )),
             "{path_str}"
         );
     }

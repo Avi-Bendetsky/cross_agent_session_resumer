@@ -654,7 +654,7 @@ fn contract_info_json_source_path_is_absolute() {
 
     let path = parsed["source_path"].as_str().unwrap();
     assert!(
-        path.starts_with('/'),
+        std::path::Path::new(path).is_absolute(),
         "source_path should be absolute, got: {path}"
     );
 }

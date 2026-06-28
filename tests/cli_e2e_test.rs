@@ -81,9 +81,14 @@ fn setup_cc_fixture_custom(
         .to_string();
     let cwd = workspace_override.unwrap_or(original_cwd);
 
+    // JSON-escape the cwd value so the resulting JSONL stays valid.
+    // On Windows, current_dir() returns a path with backslashes (e.g.
+    // C:\Dev\project) which would produce invalid JSON escapes (\D, \p)
+    // if inserted verbatim into the JSON string.
+    let cwd_json = cwd.replace('\\', "\\\\").replace('"', "\\\"");
     let content = original_content
         .replace(original_session_id, &session_id)
-        .replace(original_cwd, cwd);
+        .replace(original_cwd, &cwd_json);
 
     // Derive project key: replace non-alphanumeric with dash.
     let project_key: String = cwd

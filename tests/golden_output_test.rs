@@ -821,7 +821,7 @@ mod codex_golden {
     #[test]
     fn golden_codex_path_has_date_hierarchy() {
         let (path, _) = write_codex_session(&simple_session());
-        let path_str = path.to_string_lossy();
+        let path_str = path.to_string_lossy().replace('\\', "/");
         // Path should contain YYYY/MM/DD/rollout- structure.
         // Verify the sessions/YYYY/MM/DD pattern exists.
         assert!(
@@ -1064,15 +1064,15 @@ mod gemini_golden {
     #[test]
     fn golden_gemini_path_includes_hash_and_chats() {
         let (path, _) = write_gemini_session(&simple_session());
-        let path_str = path.to_string_lossy();
+        let path_str = path.to_string_lossy().replace('\\', "/");
         assert!(
             path_str.contains("/chats/"),
             "Gemini path should contain /chats/, got: {path_str}"
         );
-        // Path should include the hash directory.
+        // Path should be under a temp/scratch directory (Unix `/tmp`, Windows `Temp`).
         assert!(
-            path_str.contains("/tmp/"),
-            "Gemini path should be under tmp dir"
+            path_str.to_lowercase().contains("/temp/") || path_str.contains("/tmp/"),
+            "Gemini path should be under temp dir, got: {path_str}"
         );
     }
 

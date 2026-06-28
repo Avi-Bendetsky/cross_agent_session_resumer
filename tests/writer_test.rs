@@ -628,7 +628,7 @@ fn writer_codex_date_hierarchy_in_path() {
         .write_session(&simple_session(), &WriteOptions { force: false })
         .unwrap();
 
-    let path_str = written.paths[0].to_string_lossy().to_string();
+    let path_str = written.paths[0].to_string_lossy().replace('\\', "/");
     let components: Vec<&str> = path_str.split('/').collect();
 
     // Should contain "sessions" directory.

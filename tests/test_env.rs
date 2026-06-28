@@ -12,6 +12,8 @@
 //! - env mutation is never concurrent with other env reads/mutations, and
 //! - tests that acquire multiple provider locks do not deadlock (re-entrant).
 
+#![allow(dead_code)]
+
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::LazyLock;

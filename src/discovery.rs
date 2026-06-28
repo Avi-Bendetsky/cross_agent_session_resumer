@@ -641,13 +641,19 @@ pub fn parse_git_marker(path: &Path) -> Option<GitMarker> {
         }
 
         let gitdir_path = PathBuf::from(gitdir_str);
-        let resolved = if gitdir_path.is_relative() {
+        // A gitdir value is absolute if the platform says so *or* it is a
+        // Unix-absolute path (leading `/`). The latter appears in `.git` files
+        // that originated on Unix; on Windows `Path::is_absolute` is false for
+        // them (no drive prefix), so without this check they would be
+        // erroneously resolved against the `.git` file's parent drive.
+        let is_absolute_like = gitdir_path.is_absolute() || gitdir_str.starts_with('/');
+        let resolved = if is_absolute_like {
+            gitdir_path
+        } else {
             // Resolve relative to the directory containing the `.git` file.
             path.parent()
                 .map(|parent| parent.join(&gitdir_path))
                 .unwrap_or(gitdir_path)
-        } else {
-            gitdir_path
         };
 
         return Some(GitMarker::File { gitdir: resolved });

@@ -1001,7 +1001,12 @@ mod tests {
         let provider = PiAgent;
         let cmd = provider.resume_command("my-session");
         assert!(cmd.starts_with("pi --session "), "got: {cmd}");
-        assert!(cmd.ends_with("/sessions/my-session.jsonl"), "got: {cmd}");
+        let session_path = cmd.strip_prefix("pi --session ").expect("prefix");
+        assert!(
+            std::path::Path::new(session_path)
+                .ends_with(std::path::Path::new("sessions/my-session.jsonl")),
+            "got: {cmd}"
+        );
     }
 
     /// Regression test for issue #9: Codex→Pi session resumption crashed Pi
