@@ -94,8 +94,8 @@ impl ReentrantMutex {
         let current = std::thread::current().id();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
 
-        debug_assert_eq!(state.owner, Some(current), "env lock owner mismatch");
-        debug_assert!(state.depth > 0, "env lock depth invariant violated");
+        assert_eq!(state.owner, Some(current), "env lock owner mismatch");
+        assert!(state.depth > 0, "env lock depth invariant violated");
 
         state.depth = state.depth.saturating_sub(1);
         if state.depth == 0 {
