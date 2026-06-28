@@ -956,7 +956,7 @@ fn cmd_list(
     }
 
     fn provider_has_workspace_path_hint(provider_slug: &str) -> bool {
-        matches!(provider_slug, "claude-code" | "gemini")
+        matches!(provider_slug, "claude-code" | "gemini" | "qoder" | "hermes")
     }
 
     fn workspace_scoped_listed_sessions(

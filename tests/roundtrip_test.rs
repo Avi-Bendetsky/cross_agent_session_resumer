@@ -35,9 +35,11 @@ use casr::providers::codex::Codex;
 use casr::providers::cursor::Cursor;
 use casr::providers::factory::Factory;
 use casr::providers::gemini::Gemini;
+use casr::providers::hermes::Hermes;
 use casr::providers::openclaw::OpenClaw;
 use casr::providers::opencode::OpenCode;
 use casr::providers::pi_agent::PiAgent;
+use casr::providers::qoder::Qoder;
 use casr::providers::vibe::Vibe;
 use casr::providers::{Provider, WriteOptions};
 
@@ -48,6 +50,8 @@ use casr::providers::{Provider, WriteOptions};
 static CC_ENV: test_env::EnvLock = test_env::EnvLock;
 static CODEX_ENV: test_env::EnvLock = test_env::EnvLock;
 static GEMINI_ENV: test_env::EnvLock = test_env::EnvLock;
+static HERMES_ENV: test_env::EnvLock = test_env::EnvLock;
+static QODER_ENV: test_env::EnvLock = test_env::EnvLock;
 static CURSOR_ENV: test_env::EnvLock = test_env::EnvLock;
 static CLINE_ENV: test_env::EnvLock = test_env::EnvLock;
 static AIDER_ENV: test_env::EnvLock = test_env::EnvLock;
@@ -2527,4 +2531,124 @@ fn roundtrip_piagent_to_openclaw() {
         &OPENCLAW_ENV,
         "PiAgent→OpenClaw",
     );
+}
+
+// ===========================================================================
+// Path: CC → Hermes (SQLite state.db)
+// ===========================================================================
+
+#[test]
+fn roundtrip_cc_to_hermes() {
+    let _lock = HERMES_ENV.lock().unwrap();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _env = EnvGuard::set("HERMES_HOME", tmp.path());
+
+    let original = read_cc_fixture("cc_simple");
+    let written = Hermes
+        .write_session(&original, &WriteOptions { force: false })
+        .expect("CC→Hermes: write should succeed");
+
+    let readback = Hermes
+        .read_session(&written.paths[0])
+        .expect("CC→Hermes: read-back should succeed");
+
+    assert_roundtrip_fidelity(&original, &readback, "CC→Hermes");
+    assert_new_session_id(&readback, "CC→Hermes");
+}
+
+// ===========================================================================
+// Path: Hermes → CC
+// ===========================================================================
+
+#[test]
+fn roundtrip_hermes_to_cc() {
+    let hermes_canonical = {
+        let _hermes_lock = HERMES_ENV.lock().unwrap();
+        let hermes_tmp = tempfile::TempDir::new().unwrap();
+        let _hermes_env = EnvGuard::set("HERMES_HOME", hermes_tmp.path());
+
+        let seed = read_cc_fixture("cc_simple");
+        let written_hermes = Hermes
+            .write_session(&seed, &WriteOptions { force: false })
+            .expect("seed CC→Hermes write should succeed");
+
+        Hermes
+            .read_session(&written_hermes.paths[0])
+            .expect("seed Hermes read-back should succeed")
+    };
+
+    let _cc_lock = CC_ENV.lock().unwrap();
+    let cc_tmp = tempfile::TempDir::new().unwrap();
+    let _cc_env = EnvGuard::set("CLAUDE_HOME", cc_tmp.path());
+
+    let written_cc = ClaudeCode
+        .write_session(&hermes_canonical, &WriteOptions { force: false })
+        .expect("Hermes→CC: write should succeed");
+
+    let readback_cc = ClaudeCode
+        .read_session(&written_cc.paths[0])
+        .expect("Hermes→CC: read-back should succeed");
+
+    assert_roundtrip_fidelity(&hermes_canonical, &readback_cc, "Hermes→CC");
+    assert_new_session_id(&readback_cc, "Hermes→CC");
+}
+
+// ===========================================================================
+// Path: CC → Qoder (JSONL transcript)
+// ===========================================================================
+
+#[test]
+fn roundtrip_cc_to_qoder() {
+    let _lock = QODER_ENV.lock().unwrap();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _env = EnvGuard::set("QODER_HOME", tmp.path());
+
+    let original = read_cc_fixture("cc_simple");
+    let written = Qoder
+        .write_session(&original, &WriteOptions { force: false })
+        .expect("CC→Qoder: write should succeed");
+
+    let readback = Qoder
+        .read_session(&written.paths[0])
+        .expect("CC→Qoder: read-back should succeed");
+
+    assert_roundtrip_fidelity(&original, &readback, "CC→Qoder");
+    assert_new_session_id(&readback, "CC→Qoder");
+}
+
+// ===========================================================================
+// Path: Qoder → CC
+// ===========================================================================
+
+#[test]
+fn roundtrip_qoder_to_cc() {
+    let qoder_canonical = {
+        let _qoder_lock = QODER_ENV.lock().unwrap();
+        let qoder_tmp = tempfile::TempDir::new().unwrap();
+        let _qoder_env = EnvGuard::set("QODER_HOME", qoder_tmp.path());
+
+        let seed = read_cc_fixture("cc_simple");
+        let written_qoder = Qoder
+            .write_session(&seed, &WriteOptions { force: false })
+            .expect("seed CC→Qoder write should succeed");
+
+        Qoder
+            .read_session(&written_qoder.paths[0])
+            .expect("seed Qoder read-back should succeed")
+    };
+
+    let _cc_lock = CC_ENV.lock().unwrap();
+    let cc_tmp = tempfile::TempDir::new().unwrap();
+    let _cc_env = EnvGuard::set("CLAUDE_HOME", cc_tmp.path());
+
+    let written_cc = ClaudeCode
+        .write_session(&qoder_canonical, &WriteOptions { force: false })
+        .expect("Qoder→CC: write should succeed");
+
+    let readback_cc = ClaudeCode
+        .read_session(&written_cc.paths[0])
+        .expect("Qoder→CC: read-back should succeed");
+
+    assert_roundtrip_fidelity(&qoder_canonical, &readback_cc, "Qoder→CC");
+    assert_new_session_id(&readback_cc, "Qoder→CC");
 }

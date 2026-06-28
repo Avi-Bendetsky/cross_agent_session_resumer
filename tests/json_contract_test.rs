@@ -38,6 +38,8 @@ fn casr_cmd(tmp: &TempDir) -> Command {
         .env("FACTORY_HOME", tmp.path().join("factory"))
         .env("OPENCLAW_HOME", tmp.path().join("openclaw"))
         .env("PI_AGENT_HOME", tmp.path().join("pi-agent"))
+        .env("HERMES_HOME", tmp.path().join("hermes"))
+        .env("QODER_HOME", tmp.path().join("qoder"))
         .env("XDG_CONFIG_HOME", tmp.path().join("xdg-config"))
         .env("XDG_DATA_HOME", tmp.path().join("xdg-data"))
         .env("NO_COLOR", "1");
@@ -259,8 +261,8 @@ fn contract_providers_json_shape() {
         .expect("providers --json should be an array");
     assert_eq!(
         arr.len(),
-        16,
-        "should list 16 providers (CC, Codex, Gemini, Antigravity, Cursor, Cline, Aider, Amp, OpenCode, ChatGPT, ClawdBot, Vibe, Factory, OpenClaw, Pi-Agent, Kiro)"
+        18,
+        "should list 18 providers (CC, Codex, Gemini, Antigravity, Cursor, Cline, Aider, Amp, OpenCode, ChatGPT, ClawdBot, Vibe, Factory, OpenClaw, Pi-Agent, Kiro, Hermes, Qoder)"
     );
 
     for (i, item) in arr.iter().enumerate() {
@@ -300,6 +302,8 @@ fn contract_providers_known_slugs() {
     assert!(slugs.contains(&"openclaw"), "should contain openclaw");
     assert!(slugs.contains(&"pi-agent"), "should contain pi-agent");
     assert!(slugs.contains(&"kiro"), "should contain kiro");
+    assert!(slugs.contains(&"hermes"), "should contain hermes");
+    assert!(slugs.contains(&"qoder"), "should contain qoder");
 }
 
 #[test]
@@ -338,6 +342,8 @@ fn contract_providers_aliases_match_slugs() {
             "openclaw" => assert_eq!(*alias, "ocl"),
             "pi-agent" => assert_eq!(*alias, "pi"),
             "kiro" => assert_eq!(*alias, "kr"),
+            "hermes" => assert_eq!(*alias, "hme"),
+            "qoder" => assert_eq!(*alias, "qod"),
             other => panic!("Unexpected slug: {other}"),
         }
     }
@@ -1040,6 +1046,8 @@ fn contract_list_provider_field_matches_slug() {
         "openclaw",
         "pi-agent",
         "kiro",
+        "hermes",
+        "qoder",
     ];
     for item in items {
         let provider = item["provider"].as_str().unwrap();

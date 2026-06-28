@@ -2,8 +2,8 @@
 //!
 //! Each supported provider (Claude Code, Codex, Gemini CLI, Antigravity CLI,
 //! Cursor, Cline, Aider, Amp, OpenCode, ChatGPT, ClawdBot, Vibe, Factory,
-//! OpenClaw, Pi-Agent, Kiro) implements the [`Provider`] trait to read/write
-//! sessions in its native format.
+//! OpenClaw, Pi-Agent, Kiro, Hermes, Qoder) implements the [`Provider`] trait
+//! to read/write sessions in its native format.
 
 pub mod aider;
 pub mod amp;
@@ -16,10 +16,12 @@ pub mod codex;
 pub mod cursor;
 pub mod factory;
 pub mod gemini;
+pub mod hermes;
 pub mod kiro;
 pub mod openclaw;
 pub mod opencode;
 pub mod pi_agent;
+pub mod qoder;
 pub mod vibe;
 
 use std::path::{Path, PathBuf};
